@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>バス時刻・運用番号・車両番号検索</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+<style>
+*{box-sizing:border-box}
+body{
+  margin:0;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif;
+  background:#f3f6f9;
+  color:#222;
+}
+.container{max-width:900px;margin:0 auto;padding:20px}
+h1{font-size:24px;margin:0 0 18px}
+.card{
+  background:#fff;border-radius:14px;padding:18px;margin-bottom:16px;
+  box-shadow:0 2px 10px rgba(0,0,0,.08);
+}
+.grid{
+  display:grid;grid-template-columns:1fr 1fr;gap:14px;
+}
+label{display:block;font-weight:700;margin-bottom:6px}
+select,input,button{
+  width:100%;padding:12px;border:1px solid #cfd6dd;border-radius:9px;
+  font-size:16px;background:#fff;
+}
+button{
+  background:#1769aa;color:#fff;border:none;font-weight:700;cursor:pointer;
+}
+button:hover{opacity:.9}
+.full{grid-column:1/-1}
+.info{
+  background:#eef6ff;border-left:4px solid #1769aa;padding:10px 12px;
+  border-radius:6px;margin-top:12px;font-size:14px;
+}
+.status{margin:14px 0;font-weight:700}
+.error{color:#c62828}
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;min-width:430px}
+th,td{padding:11px 9px;border-bottom:1px solid #e2e6ea;text-align:center}
+th{background:#f0f3f6;font-weight:700}
+td.time{font-size:18px;font-weight:700}
+td.op{font-weight:700}
+td.vehicle{font-weight:700}
+tr.running{background:#eefaf0}
+.small{font-size:13px;color:#667}
+.title-line{font-size:18px;font-weight:800;margin-bottom:4px}
+.route-line{font-size:14px;color:#555}
+.badge{
+  display:inline-block;padding:4px 8px;border-radius:999px;
+  background:#e8f1fb;font-size:13px;font-weight:700;
+}
+.login-screen{
+  min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;
+}
+.login-box{max-width:420px;width:100%;background:#fff;border-radius:16px;padding:28px;box-shadow:0 3px 18px rgba(0,0,0,.12)}
+.login-box h1{text-align:center}
+#mainContent{display:none}
+@media(max-width:650px){
+  .grid{grid-template-columns:1fr}
+  .full{grid-column:auto}
+  h1{font-size:21px}
+  .container{padding:12px}
+}
+</style>
+</head>
+<body>
+
+<div id="loginScreen" class="login-screen">
+  <div class="login-box">
+    <h1>🔒 関係者用サイト</h1>
+    <p class="small">パスワードを入力してください。</p>
+    <input id="passwordInput" type="password" placeholder="パスワード">
+    <button id="loginButton" style="margin-top:12px">ログイン</button>
+    <p id="loginError" class="error"></p>
+  </div>
+</div>
+
+<div id="mainContent">
+<div class="container">
+  <h1>🚌 時刻・運用番号・車両番号検索</h1>
+
+  <div class="card">
+    <div class="grid">
+      <div>
+        <label for="dateInput">日付</label>
+        <input id="dateInput" type="date">
+      </div>
+
+      <div>
+        <label for="routeSelect">路線</label>
+        <select id="routeSelect">
+          <option value="yonemoto">米本団地線</option>
+        </select>
+      </div>
+
+      <div>
+        <label for="stopSelect">停留所</label>
+        <select id="stopSelect"></select>
+      </div>
+
+      <div>
+        <label for="directionSelect">方向</label>
+        <select id="directionSelect"></select>
+      </div>
+
+      <div class="full">
+        <button id="searchButton">時刻表を表示</button>
+      </div>
+    </div>
+
+    <div id="dayInfo" class="info"></div>
+  </div>
+
+  <div id="status" class="status"></div>
+  <div id="result"></div>
+</div>
+</div>
+
+<script>
+"use strict";
+
+/* =============================
+   関係者用パスワード
+   必要ならここを書き換えてください
+   ============================= */
+const SITE_PASSWORD = "bus2026";
+
+/* Excelファイル名
+   GitHub Pagesでは index.html と同じ場所に置いてください */
+const OPERATION_FILE = "bus_number.xlsx";
+const VEHICLE_FILE   = "bus_schedule.xlsx";
+
+/* =============================
+   路線・停留所設定
+   今回は米本団地線を登録
+   ============================= */
+const ROUTES = {
+  yonemoto: {
+    name: "米本団地線",
+    stops: [
+      {
+        name: "勝田台駅",
+        directions: ["米本団地行"],
+        destination: "米本団地"
+      },
+      {
+        name: "米本団地",
+        directions: ["米本団地行"],
+        destination: "米本団地"
+      }
+    ]
+  }
+};
+
+let operationWorkbook = null;
+let vehicleWorkbook = null;
+
+/* =============================
+   ログイン
+   ============================= */
+function login(){
+  const input = document.getElementById("passwordInput");
+  const error = document.getElementById("loginError");
+
+  if(input.value === SITE_PASSWORD){
+    sessionStorage.setItem("busTimetableLogin","ok");
+    document.getElementById("loginScreen").style.display="none";
+    document.getElementById("mainContent").style.display="block";
+    error.textContent="";
+  }else{
+    error.textContent="パスワードが正しくありません。";
+    input.value="";
+    input.focus();
+  }
+}
+
+function checkLogin(){
+  if(sessionStorage.getItem("busTimetableLogin")==="ok"){
+    document.getElementById("loginScreen").style.display="none";
+    document.getElementById("mainContent").style.display="block";
+  }
+}
+
+document.getElementById("loginButton").addEventListener("click",login);
+document.getElementById("passwordInput").addEventListener("keydown",e=>{
+  if(e.key==="Enter") login();
+});
+
+/* =============================
+   共通関数
+   ============================= */
+function esc(value){
+  return String(value ?? "")
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;")
+    .replace(/'/g,"&#039;");
+}
+
+function normalizeText(value){
+  return String(value ?? "")
+    .trim()
+    .replace(/\u3000/g," ");
+}
+
+function normalizeOperation(value){
+  return normalizeText(value)
+    .replace(/[‐-‒–—−]/g,"-")
+    .replace(/\s+/g,"");
+}
+
+function todayString(){
+  const d=new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+
+function formatDateJP(date){
+  const d=new Date(date+"T12:00:00");
+  return `${d.getFullYear()}/${d.getMonth()+1}/${d.getDate()}`;
+}
+
+function timeToMinutes(value){
+  if(value===null || value===undefined || value==="") return null;
+
+  if(value instanceof Date){
+    return value.getHours()*60+value.getMinutes();
+  }
+
+  if(typeof value==="number"){
+    if(value>=0 && value<1) return Math.round(value*1440);
+
+    const h=Math.floor(value/100);
+    const m=Math.round(value%100);
+    if(h>=0 && h<=29 && m>=0 && m<60) return h*60+m;
+  }
+
+  const s=normalizeText(value);
+
+  let m=s.match(/^(\d{1,2}):(\d{2})$/);
+  if(m) return Number(m[1])*60+Number(m[2]);
+
+  m=s.match(/^(\d{1,2})時(\d{1,2})分?$/);
+  if(m) return Number(m[1])*60+Number(m[2]);
+
+  m=s.match(/^(\d{1,2})(\d{2})$/);
+  if(m) return Number(m[1])*60+Number(m[2]);
+
+  return null;
+}
+
+function formatMinutes(min){
+  if(min===null || min===undefined) return "";
+  let x=Math.round(min);
+  const h=Math.floor(x/60);
+  const m=x%60;
+  return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0");
+}
+
+function is2026Holiday(date){
+  const holidays=new Set([
+    "2026-01-01","2026-01-12","2026-02-11","2026-02-23",
+    "2026-03-20","2026-04-29",
+    "2026-05-03","2026-05-04","2026-05-05","2026-05-06",
+    "2026-07-20","2026-08-11",
+    "2026-09-21","2026-09-22","2026-09-23",
+    "2026-10-12","2026-11-03","2026-11-23"
+  ]);
+  return holidays.has(date);
+}
+
+function dayType(date){
+  const d=new Date(date+"T12:00:00");
+  const w=d.getDay();
+
+  if(w===0 || is2026Holiday(date)) return "休日";
+  if(w===6) return "土曜";
+  return "平日";
+}
+
+function prefixForDayType(type){
+  if(type==="平日") return "平";
+  if(type==="土曜") return "土";
+  return "休";
+}
+
+function scheduleSheetNames(date){
+  const type=dayType(date);
+  const suffix=date>="2026-10-01" ? "2026101から" : "202621から";
+  return [
+    `${type}(${suffix})`,
+    `${type}_中型`
+  ];
+}
+
+/* =============================
+   Excel読み込み
+   ============================= */
+async function loadWorkbook(filename){
+  const response=await fetch(filename,{cache:"no-store"});
+  if(!response.ok){
+    throw new Error(`${filename} を読み込めませんでした。HTTP ${response.status}`);
+  }
+  const buffer=await response.arrayBuffer();
+  return XLSX.read(buffer,{type:"array"});
+}
+
+async function ensureDataLoaded(){
+  if(!operationWorkbook){
+    operationWorkbook=await loadWorkbook(OPERATION_FILE);
+  }
+  if(!vehicleWorkbook){
+    vehicleWorkbook=await loadWorkbook(VEHICLE_FILE);
+  }
+}
+
+/* =============================
+   運用表
+   ============================= */
+function operationMatches(a,b){
+  const x=normalizeOperation(a);
+  const y=normalizeOperation(b);
+
+  if(x===y) return true;
+
+  /* 平01 → 平01-1 も許容 */
+  if(/^[平土休]\d+$/.test(x) && y.startsWith(x+"-")) return true;
+  if(/^[平土休]\d+$/.test(y) && x.startsWith(y+"-")) return true;
+
+  return false;
+}
+
+function findOperationBlock(sheetName,operation){
+  const sheet=operationWorkbook.Sheets[sheetName];
+  if(!sheet) return null;
+
+  const rows=XLSX.utils.sheet_to_json(sheet,{
+    header:1,
+    defval:"",
+    raw:true
+  });
+
+  for(let i=0;i<rows.length;i++){
+    const row=rows[i];
+
+    if(normalizeText(row[0])!=="運用番号") continue;
+
+    const actualOperation=normalizeText(row[1]);
+
+    if(!operationMatches(actualOperation,operation)) continue;
+
+    const blockRows=[];
+
+    for(let r=i+1;r<rows.length;r++){
+      const next=rows[r];
+
+      if(normalizeText(next[0])==="運用番号") break;
+      blockRows.push(next);
+    }
+
+    return {
+      sheetName,
+      actualOperation,
+      rows:blockRows
+    };
+  }
+
+  return null;
+}
+
+function findOperation(operation,date){
+  for(const sheetName of scheduleSheetNames(date)){
+    const found=findOperationBlock(sheetName,operation);
+    if(found) return found;
+  }
+
+  /* シート名が多少違っても平・土・休でフォールバック */
+  const prefix=normalizeOperation(operation).charAt(0);
+
+  for(const sheetName of operationWorkbook.SheetNames){
+    if(!sheetName.startsWith(prefix)) continue;
+
+    if(scheduleSheetNames(date).includes(sheetName)) continue;
+
+    const found=findOperationBlock(sheetName,operation);
+    if(found) return found;
+  }
+
+  return null;
+}
+
+/* 運用表1ブロックから営業便を抽出 */
+function parseTrips(block){
+  const trips=[];
+
+  for(const row of block.rows){
+    if(!row || row.length<6) continue;
+
+    const arrow=normalizeText(row[3]);
+    if(arrow!=="→" && arrow!=="←") continue;
+
+    const leftStop=normalizeText(row[1]);
+    const leftTime=timeToMinutes(row[2]);
+    const rightStop=normalizeText(row[4]);
+    const rightTime=timeToMinutes(row[5]);
+    const note=normalizeText(row[6]);
+
+    if(leftTime===null || rightTime===null) continue;
+    if(note.includes("回送")) continue;
+
+    let from,to,dep,arr;
+
+    if(arrow==="→"){
+      from=leftStop;
+      to=rightStop;
+      dep=leftTime;
+      arr=rightTime;
+    }else{
+      from=rightStop;
+      to=leftStop;
+      dep=rightTime;
+      arr=leftTime;
+    }
+
+    if(arr<dep) arr+=1440;
+
+    trips.push({
+      route:normalizeText(row[0]),
+      from,to,dep,arr
+    });
+  }
+
+  return trips;
+}
+
+/* =============================
+   指定停留所の時刻を作る
+   「方向」は便の行先で判定
+   ============================= */
+function getStopTimetable(date,stopName,destination){
+  const type=dayType(date);
+  const prefix=prefixForDayType(type);
+
+  const seen=new Map();
+
+  /* 当日の区分の全シートを調べる */
+  const sheetNames=scheduleSheetNames(date);
+
+  for(const sheetName of sheetNames){
+    const sheet=operationWorkbook.Sheets[sheetName];
+    if(!sheet) continue;
+
+    const rows=XLSX.utils.sheet_to_json(sheet,{
+      header:1,defval:"",raw:true
+    });
+
+    for(let i=0;i<rows.length;i++){
+      const row=rows[i];
+      if(normalizeText(row[0])!=="運用番号") continue;
+
+      const operation=normalizeText(row[1]);
+      if(!operation.startsWith(prefix)) continue;
+
+      /* このブロックの終端 */
+      const blockRows=[];
+      for(let r=i+1;r<rows.length;r++){
+        if(normalizeText(rows[r][0])==="運用番号") break;
+        blockRows.push(rows[r]);
+      }
+
+      const block={rows:blockRows};
+      const trips=parseTrips(block);
+
+      for(const trip of trips){
+        if(trip.to!==destination) continue;
+        if(trip.from!==stopName) continue;
+
+        /*
+          方向名はユーザー指定の「米本団地行」などを
+          実際の行先と一致させて表示する。
+        */
+        const key=`${formatMinutes(trip.dep)}|${operation}|${trip.to}`;
+
+        if(!seen.has(key)){
+          seen.set(key,{
+            time:trip.dep,
+            operation,
+            destination:trip.to,
+            route:trip.route
+          });
+        }
+      }
+    }
+  }
+
+  return [...seen.values()].sort((a,b)=>{
+    if(a.time!==b.time) return a.time-b.time;
+    return a.operation.localeCompare(b.operation,"ja");
+  });
+}
+
+/* =============================
+   号車表
+   ============================= */
+function dateColumnFromVehicleSheet(rows,date){
+  if(rows.length<2) return -1;
+
+  for(let c=2;c<(rows[1]||[]).length;c++){
+    const value=rows[1][c];
+    let d=null;
+
+    if(value instanceof Date){
+      d=value;
+    }else if(typeof value==="number"){
+      const utc=new Date(Date.UTC(1899,11,30)+value*86400000);
+      d=new Date(utc.getUTCFullYear(),utc.getUTCMonth(),utc.getUTCDate());
+    }else{
+      const s=normalizeText(value).replace(/[./]/g,"-");
+      const m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+      if(m){
+        d=new Date(Number(m[1]),Number(m[2])-1,Number(m[3]));
+      }
+    }
+
+    if(d){
+      const ymd=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+      if(ymd===date) return c;
+    }
+  }
+
+  return -1;
+}
+
+function operationNumberForVehicle(operation){
+  const m=normalizeText(operation).match(/(\d+)/);
+  return m ? Number(m[1]) : null;
+}
+
+function getVehicle(operation,date){
+  const d=new Date(date+"T12:00:00");
+  const monthSheet=`${d.getMonth()+1}月`;
+  const sheet=vehicleWorkbook.Sheets[monthSheet];
+
+  if(!sheet) return "";
+
+  const rows=XLSX.utils.sheet_to_json(sheet,{
+    header:1,defval:"",raw:true
+  });
+
+  const dateCol=dateColumnFromVehicleSheet(rows,date);
+  if(dateCol<0) return "";
+
+  const target=operationNumberForVehicle(operation);
+  if(target===null) return "";
+
+  for(let r=2;r<rows.length;r++){
+    const opCell=rows[r][0];
+
+    if(opCell===null || opCell===undefined || opCell==="") continue;
+
+    let n=null;
+
+    if(typeof opCell==="number"){
+      n=Number(opCell);
+    }else{
+      const m=String(opCell).trim().match(/^(\d+)/);
+      if(m) n=Number(m[1]);
+    }
+
+    if(n===target){
+      const vehicle=rows[r][dateCol];
+
+      if(vehicle!==null && vehicle!==undefined && vehicle!==""){
+        return String(vehicle).replace(/\.0$/,"")+"号車";
+      }
+
+      return "";
+    }
+  }
+
+  return "";
+}
+
+/* =============================
+   UI
+   ============================= */
+function updateDayInfo(){
+  const date=document.getElementById("dateInput").value;
+  if(!date) return;
+
+  const type=dayType(date);
+  const prefix=prefixForDayType(type);
+
+  document.getElementById("dayInfo").innerHTML=
+    `選択日：<strong>${esc(formatDateJP(date))}</strong>　
+     運行区分：<span class="badge">${esc(type)}</span>　
+     運用番号：<span class="badge">${prefix}○○</span>`;
+}
+
+function populateStops(){
+  const route=ROUTES[document.getElementById("routeSelect").value];
+  const stopSelect=document.getElementById("stopSelect");
+
+  stopSelect.innerHTML="";
+
+  for(const stop of route.stops){
+    const option=document.createElement("option");
+    option.value=stop.name;
+    option.textContent=stop.name;
+    stopSelect.appendChild(option);
+  }
+
+  updateDirections();
+}
+
+function updateDirections(){
+  const route=ROUTES[document.getElementById("routeSelect").value];
+  const stopName=document.getElementById("stopSelect").value;
+  const stop=route.stops.find(x=>x.name===stopName);
+
+  const select=document.getElementById("directionSelect");
+  select.innerHTML="";
+
+  if(!stop) return;
+
+  for(const direction of stop.directions){
+    const option=document.createElement("option");
+    option.value=direction;
+    option.textContent=direction;
+    select.appendChild(option);
+  }
+}
+
+async function searchTimetable(){
+  const date=document.getElementById("dateInput").value;
+  const routeId=document.getElementById("routeSelect").value;
+  const stopName=document.getElementById("stopSelect").value;
+  const direction=document.getElementById("directionSelect").value;
+
+  const status=document.getElementById("status");
+  const result=document.getElementById("result");
+
+  if(!date){
+    status.innerHTML='<span class="error">日付を指定してください。</span>';
+    return;
+  }
+
+  status.textContent="🔄 運用表・号車表を読み込んでいます…";
+  result.innerHTML="";
+
+  try{
+    await ensureDataLoaded();
+
+    const route=ROUTES[routeId];
+    const stop=route.stops.find(x=>x.name===stopName);
+
+    if(!stop){
+      throw new Error("停留所設定が見つかりません。");
+    }
+
+    const rows=getStopTimetable(date,stopName,stop.destination);
+
+    if(rows.length===0){
+      status.innerHTML='<span class="error">該当する時刻が見つかりませんでした。</span>';
+      result.innerHTML=`
+        <div class="card">
+          <div class="title-line">${esc(route.name)}</div>
+          <div class="route-line">${esc(stopName)} → ${esc(direction)}</div>
+          <p class="small">選択日：${esc(formatDateJP(date))}（${esc(dayType(date))}）</p>
+        </div>`;
+      return;
+    }
+
+    const enriched=rows.map(item=>({
+      ...item,
+      vehicle:getVehicle(item.operation,date)
+    }));
+
+    status.innerHTML=
+      `🟢 ${enriched.length}便を表示しています。`;
+
+    let html=`
+      <div class="card">
+        <div class="title-line">${esc(route.name)}</div>
+        <div class="route-line">
+          ${esc(stopName)}　方向：${esc(direction)}
+        </div>
+        <p class="small">
+          日付：${esc(formatDateJP(date))}
+          　運行区分：${esc(dayType(date))}
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>時刻</th>
+                <th>運用番号</th>
+                <th>車両番号</th>
+              </tr>
+            </thead>
+            <tbody>`;
+
+    for(const item of enriched){
+      html+=`
+        <tr>
+          <td class="time">${esc(formatMinutes(item.time))}</td>
+          <td class="op">${esc(item.operation)}</td>
+          <td class="vehicle">${esc(item.vehicle || "号車未設定")}</td>
+        </tr>`;
+    }
+
+    html+=`
+            </tbody>
+          </table>
+        </div>
+
+        <p class="small" style="margin-top:12px">
+          ※運用番号は指定日の運用表、車両番号は指定日の号車表から取得しています。
+        </p>
+      </div>`;
+
+    result.innerHTML=html;
+
+  }catch(error){
+    console.error(error);
+    status.innerHTML='<span class="error">データの読み込みに失敗しました。</span>';
+    result.innerHTML=`
+      <div class="card">
+        <p class="error">${esc(error.message)}</p>
+        <p class="small">
+          index.html、bus_number.xlsx、bus_schedule.xlsx が
+          GitHub Pages上で同じ階層にあるか確認してください。
+        </p>
+      </div>`;
+  }
+}
+
+/* =============================
+   初期化
+   ============================= */
+document.getElementById("dateInput").value=todayString();
+populateStops();
+updateDayInfo();
+checkLogin();
+
+document.getElementById("routeSelect").addEventListener("change",populateStops);
+document.getElementById("stopSelect").addEventListener("change",updateDirections);
+document.getElementById("dateInput").addEventListener("change",updateDayInfo);
+document.getElementById("searchButton").addEventListener("click",searchTimetable);
+
+</script>
+</body>
+</html>
